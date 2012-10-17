@@ -208,6 +208,7 @@ class SVGWriter:
         m = self.camera.proj_matrix * self.camera.view_matrix * world_matrix
         print("Transform: ", m)
         
+        #   project vertices
         for vertex in mesh.vertices:          
             p = m*vertex.co        
             p /= p[2]
@@ -224,28 +225,33 @@ class SVGWriter:
             print("Projected point: ", p)
                    
         
-        #   export all polygons
-        
-        #   get normal transform matrix
-        normal_matrix = (self.camera.view_matrix * world_matrix).to_3x3().inverted().transposed()
-        
-        for polygon in mesh.polygons:
-            #   check global option about culling
-            if self.policy.back_culling:
-                #   transform normal to view space
-                normal = normal_matrix * polygon.normal
-                #   calculate dot product
-                cos_angle = normal * Vector((0,0,1))
-                
-                #   skip this polygon
-                if (cos_angle <= 0):
-                    continue
-                           
-            v = []
-            for vert_index in polygon.vertices:
-                v.append(projected_vertices[vert_index])
-            self.polygon(v)
-                   
+        if self.policy.edge_detection == 'OPT_A':
+            #   export all polygons
+            
+            #   get normal transform matrix
+            normal_matrix = (self.camera.view_matrix * world_matrix).to_3x3().inverted().transposed()
+            
+            for polygon in mesh.polygons:
+                #   check global option about culling
+                if self.policy.back_culling:
+                    #   transform normal to view space
+                    normal = normal_matrix * polygon.normal
+                    #   calculate dot product
+                    cos_angle = normal * Vector((0,0,1))
+                    
+                    #   skip this polygon
+                    if (cos_angle <= 0):
+                        continue
+                               
+                v = []
+                for vert_index in polygon.vertices:
+                    v.append(projected_vertices[vert_index])
+                self.polygon(v)
+        elif self.policy.edge_detection == 'OPT_B':
+            print("Warning: edge detection algorithm is not supported")
+        else:
+            print("Edge detection algorithm is not supported")
+                       
         return
        
     #
@@ -288,6 +294,8 @@ class SVGExportPolicy:
         self.wireframe = False
         #   line width
         self.line_width = 1
+        #   edge detection algorithm
+        self.edge_detection = 'OPT_B'
 
 #
 #   Exporter implementation
@@ -336,7 +344,15 @@ class SVGExporter(Operator, ExportHelper):
             min = 0.001,
             max = 10.0,
             default = 1)
-                                
+            
+    edge_detection = EnumProperty(
+        name="Edge detection",
+        description="Select edge detection algorithm",
+        items=(('OPT_A', "Algorithm 1", "No edge detection"),
+               ('OPT_B', "Algorithm 2", "Simple edge detection")),
+        default='OPT_B',
+        )
+                            
 
     def execute(self, context):
         options = SVGExportPolicy()
@@ -344,6 +360,7 @@ class SVGExporter(Operator, ExportHelper):
         options.back_culling = self.cull_back
         options.wireframe = self.wireframe
         options.line_width = self.line_width
+        options.edge_detection = self.edge_detection
         
         writer = SVGWriter(options)
         return writer.run()
