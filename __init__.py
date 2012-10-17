@@ -194,7 +194,7 @@ class SVGWriter:
             self.file.write("%f,%f " % (p[0], p[1]))
         self.file.write('"\n')           
         if self.policy.wireframe:
-            self.file.write('style="fill:none;stroke:black;stroke-width:3" />\n')
+            self.file.write('style="fill:none;stroke:black;stroke-width:%f" />\n' % (self.policy.line_width))
         else:
           self.file.write('style="fill:rgb(255,255,255); stroke:black;stroke-width:%f" />\n' % (self.policy.line_width))
         return 
