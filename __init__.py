@@ -28,7 +28,9 @@ bl_info = {
 import bpy
 import math
 import mathutils
+import copy
 
+from copy import deepcopy
 from mathutils import Matrix, Vector
 from math import tan, atan
 
@@ -67,6 +69,95 @@ def make_projection_matrix(fovx, aspect, znear, zfar):
     
     return m
 
+class SVGVertex:
+    def __init__(self):
+        return
+    
+    def __init__(self, vertex):
+        self.vertex = vertex.co
+        return
+ 
+class SVGFace:
+    def __init__(self, polygon):
+        self.vertices = polygon.vertices   
+        self.normal = polygon.normal
+        return
+    
+#
+#   
+#
+class SVGMesh:
+    def __init__(self, mesh):
+        self.projected_vertices = []
+        self.vertices = []
+        self.faces = []       
+        self.proj = Matrix()
+        self.view = Matrix()
+        self.world = Matrix()
+        
+        for v in mesh.vertices:
+            vertex = SVGVertex(v)
+            self.vertices.append(vertex)
+            
+        for f in mesh.polygons:
+            face = SVGFace(f)
+            self.faces.append(face)
+        return
+    
+    def project_vertices(self, proj, view, world):
+        self.proj = proj
+        self.view = view
+        self.world = world
+        for v in self.vertices:
+            p =  proj * view * world * v.vertex
+            p /= p[2]
+    
+            #   scale and centralise
+            screen_width = bpy.context.scene.render.resolution_x
+            screen_height = bpy.context.scene.render.resolution_y
+            
+            p[0] = screen_width / 2 + p[0] / 2 * screen_width
+            p[1] = screen_height / 2 + -p[1] / 2 * screen_height
+            
+            #   debug output
+            projected_vertices.append(p)
+            print("Projected point: ", p)
+            
+            proj_v = SVGVertex();
+            proj_v.vertex = p                      
+            projected_vertices.append(proj_v)
+        return
+        
+    def sort_faces(self):        
+        sorted(faces, key = self.cmp)
+        return
+    
+    def cmp(self, face):
+        c = Vector()
+        for v in face:
+            c = c + self.view * self.world * self.mesh.vertices[v]                        
+        return c / len(face)
+    
+    def front_faces(self):        
+        #   get normal transform matrix
+        normal_matrix = (self.view * self.world).to_3x3().inverted().transposed()
+    
+        result = []    
+        for face in self.faces:
+            normal = normal_matrix * face.normal
+            #   calculate dot product
+            cos_angle = normal * Vector((0,0,1))
+    
+            #   skip this polygon
+            if (cos_angle <= 0):
+                continue
+                           
+            v = []
+            for vert_index in polygon.vertices:
+                v.append(projected_vertices[vert_index])
+            result.append(v)
+            
+        return result        
     
 #
 #   contains view and projection matrices
@@ -203,49 +294,12 @@ class SVGWriter:
     #   exports mesh to svg
     #
     def export_mesh(self, world_matrix, mesh):
-        projected_vertices = []
-    
-        m = self.camera.proj_matrix * self.camera.view_matrix * world_matrix
-        print("Transform: ", m)
+        svg_mesh = SVGMesh(mesh)
         
-        #   project vertices
-        for vertex in mesh.vertices:          
-            p = m*vertex.co        
-            p /= p[2]
-    
-            #   scale and centralise
-            screen_width = bpy.context.scene.render.resolution_x
-            screen_height = bpy.context.scene.render.resolution_y
-            
-            p[0] = screen_width / 2 + p[0] / 2 * screen_width
-            p[1] = screen_height / 2 + -p[1] / 2 * screen_height
-            
-            #   debug output
-            projected_vertices.append(p)
-            print("Projected point: ", p)
-                   
-        
+        svg_mesh.project_vertices(self.camera.proj_matrix, self.camera.view_matrix, world_matrix)   
+        svg_mesh.sort_faces()           
+                        
         if self.policy.edge_detection == 'OPT_A':
-            #   export all polygons
-            
-            #   get normal transform matrix
-            normal_matrix = (self.camera.view_matrix * world_matrix).to_3x3().inverted().transposed()
-            
-            for polygon in mesh.polygons:
-                #   check global option about culling
-                if self.policy.back_culling:
-                    #   transform normal to view space
-                    normal = normal_matrix * polygon.normal
-                    #   calculate dot product
-                    cos_angle = normal * Vector((0,0,1))
-                    
-                    #   skip this polygon
-                    if (cos_angle <= 0):
-                        continue
-                               
-                v = []
-                for vert_index in polygon.vertices:
-                    v.append(projected_vertices[vert_index])
                 self.polygon(v)
         elif self.policy.edge_detection == 'OPT_B':
             print("Warning: edge detection algorithm is not supported")
