@@ -69,12 +69,9 @@ def make_projection_matrix(fovx, aspect, znear, zfar):
     
     return m
 
-class SVGVertex:
+class SVGVertex: 
     def __init__(self):
-        return
-    
-    def __init__(self, vertex):
-        self.vertex = vertex.co
+        self.position = Vector()
         return
  
 class SVGFace:
@@ -82,7 +79,12 @@ class SVGFace:
         self.vertices = polygon.vertices   
         self.normal = polygon.normal
         return
-    
+
+class SVGEdge:
+    def __init__(self):
+        self.vertex = []
+        return
+                   
 #
 #   
 #
@@ -90,18 +92,21 @@ class SVGMesh:
     def __init__(self, mesh):
         self.projected_vertices = []
         self.vertices = []
+        self.edges = set()
         self.faces = []       
         self.proj = Matrix()
         self.view = Matrix()
         self.world = Matrix()
         
         for v in mesh.vertices:
-            vertex = SVGVertex(v)
+            vertex = SVGVertex()
+            vertex.position = v.co
             self.vertices.append(vertex)
             
         for f in mesh.polygons:
             face = SVGFace(f)
             self.faces.append(face)
+
         return
     
     def project_vertices(self, proj, view, world):
@@ -109,7 +114,7 @@ class SVGMesh:
         self.view = view
         self.world = world
         for v in self.vertices:
-            p =  proj * view * world * v.vertex
+            p =  proj * view * world * v.position
             p /= p[2]
     
             #   scale and centralise
@@ -119,24 +124,24 @@ class SVGMesh:
             p[0] = screen_width / 2 + p[0] / 2 * screen_width
             p[1] = screen_height / 2 + -p[1] / 2 * screen_height
             
-            #   debug output
-            projected_vertices.append(p)
-            print("Projected point: ", p)
-            
+            #   debug output            
             proj_v = SVGVertex();
-            proj_v.vertex = p                      
-            projected_vertices.append(proj_v)
+            proj_v.position = p                    
+            self.projected_vertices.append(proj_v)
+            
         return
         
     def sort_faces(self):        
-        sorted(faces, key = self.cmp)
+        self.faces = sorted(self.faces, key = self.cmp, reverse = True)
         return
     
     def cmp(self, face):
         c = Vector()
-        for v in face:
-            c = c + self.view * self.world * self.mesh.vertices[v]                        
-        return c / len(face)
+        for v in face.vertices:
+            c = c + self.view * self.world * self.vertices[v].position
+        c /= len(face.vertices)
+        print(c.length)
+        return c.length
     
     def front_faces(self):        
         #   get normal transform matrix
@@ -153,11 +158,23 @@ class SVGMesh:
                 continue
                            
             v = []
-            for vert_index in polygon.vertices:
-                v.append(projected_vertices[vert_index])
+            for vert_index in face.vertices:                
+                v.append(self.projected_vertices[vert_index])
             result.append(v)
             
-        return result        
+        return result    
+    
+    def all_faces(self):
+        result = []    
+        for face in self.faces:                      
+            v = []
+            for vert_index in face.vertices:                
+                v.append(self.projected_vertices[vert_index])
+            result.append(v)            
+        return result   
+    
+    def calculate_edges(self):
+        return 
     
 #
 #   contains view and projection matrices
@@ -282,7 +299,8 @@ class SVGWriter:
     def polygon(self, points):
         self.file.write('<polygon points="')
         for p in points:
-            self.file.write("%f,%f " % (p[0], p[1]))
+           # print("Write: ", p.position[0])
+            self.file.write("%f,%f " % (p.position[0], p.position[1]))
         self.file.write('"\n')           
         if self.policy.wireframe:
             self.file.write('style="fill:none;stroke:black;stroke-width:%f" />\n' % (self.policy.line_width))
@@ -297,10 +315,22 @@ class SVGWriter:
         svg_mesh = SVGMesh(mesh)
         
         svg_mesh.project_vertices(self.camera.proj_matrix, self.camera.view_matrix, world_matrix)   
-        svg_mesh.sort_faces()           
+        print("PROJECTED 2 : ", svg_mesh.projected_vertices[0].position)
+        
+        if self.policy.sort_zview:
+            svg_mesh.sort_faces()
                         
         if self.policy.edge_detection == 'OPT_A':
-                self.polygon(v)
+            if self.policy.back_culling:
+                f = svg_mesh.front_faces()
+                print("Front faces count: ", len(f))
+                for v in f:
+                    self.polygon(v)
+            else:
+                f = svg_mesh.all_faces()
+                print("Front faces count: ", len(f))
+                for v in f:
+                    self.polygon(v)
         elif self.policy.edge_detection == 'OPT_B':
             print("Warning: edge detection algorithm is not supported")
         else:
@@ -385,7 +415,7 @@ class SVGExporter(Operator, ExportHelper):
     zsort = BoolProperty(
             name = "Enable z-sort",
             description = "Enable ",
-            default = False,
+            default = True,
             )  
             
     #   set up width of lines
@@ -404,7 +434,7 @@ class SVGExporter(Operator, ExportHelper):
         description="Select edge detection algorithm",
         items=(('OPT_A', "Algorithm 1", "No edge detection"),
                ('OPT_B', "Algorithm 2", "Simple edge detection")),
-        default='OPT_B',
+        default='OPT_A',
         )
                             
 
@@ -412,6 +442,7 @@ class SVGExporter(Operator, ExportHelper):
         options = SVGExportPolicy()
         options.file_path = self.filepath
         options.back_culling = self.cull_back
+        options.sort_zview = self.zsort
         options.wireframe = self.wireframe
         options.line_width = self.line_width
         options.edge_detection = self.edge_detection
