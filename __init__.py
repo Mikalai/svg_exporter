@@ -32,7 +32,7 @@ import copy
 
 from copy import deepcopy
 from mathutils import Matrix, Vector
-from math import tan, atan
+from math import tan, atan, acos, cos, pi
 
 def make_view_matrix(eye, target, up):
     zAxis = eye - target
@@ -110,6 +110,7 @@ class SVGFace:
     def __init__(self, polygon):
         self.vertices = polygon.vertices   
         self.normal = polygon.normal
+        self.edges = polygon.edge_keys
         return
 
 class SVGEdge:
@@ -138,6 +139,10 @@ class SVGMesh:
         for f in mesh.polygons:
             face = SVGFace(f)
             self.faces.append(face)
+            
+        for e in mesh.edges:
+            edge = (e.vertices[0], e.vertices[1])
+            self.edges.add(edge)
 
         return
     
@@ -181,7 +186,7 @@ class SVGMesh:
         
         print("Normal matrix: ", normal_matrix)
     
-        result = []    
+        result = []
         for face in self.faces:
             normal = (normal_matrix * face.normal).normalized()
             print("Normal in view space: ", normal)
@@ -190,15 +195,20 @@ class SVGMesh:
             print("Cos angle: ", cos_angle)
     
             #   skip this polygon
-            if (cos_angle >= 0.3):
+            if (cos_angle >= 0):
                 continue
-                           
+            
+            result.append(face)            
+        return result    
+    
+    def project_faces(self, faces):
+        result = []
+        for face in faces:
             v = []
             for vert_index in face.vertices:                
                 v.append(self.projected_vertices[vert_index])
             result.append(v)
-            
-        return result    
+        return result
     
     def all_faces(self):
         result = []    
@@ -208,6 +218,52 @@ class SVGMesh:
                 v.append(self.projected_vertices[vert_index])
             result.append(v)            
         return result   
+    
+    def all_edges(self, max_value):
+        front_faces = self.front_faces()
+        print("Front faces to check: ", len(front_faces));
+        #   find all edges of front faces
+        all_edges = {}
+        for face in front_faces:
+            for edge in face.edges:
+                #   add to the visible edge, edge but with sorted start and end
+                key = tuple(sorted(edge))
+                if all_edges.get(key) == None:
+                    all_edges[key] = [face]
+                else:
+                    all_edges[key].append(face)
+                    
+        print("Front edges to check: ", len(all_edges.keys()));
+        
+        edges = set()
+        #   go through all visible edges
+        count = 1;
+        for e1, faces in all_edges.items():
+            if count % 10 == 0:
+                print("Scan edge ", count)
+            count += 1
+            #print("Faces for edge detected: ", len(faces))
+            if len(faces) == 1:
+                #   we found a border
+                edges.add(e1)
+            elif len(faces) == 2:                                   
+                #   calculate angle between normals of two border meshes         
+                cos_angle = faces[0].normal*faces[1].normal
+                #print("Cos angle: ", cos_angle)
+                #   check if this edge is rough enough
+                if cos_angle < cos(max_value/180*pi):
+                    edges.add(e1)
+            else:
+                print("Ignoring edge", e1, " because no front faces found for it")
+            
+        print("Edges count detected: ", len(edges))
+        #   convert edges keys to projected points
+        result = []
+        for e in edges:
+            p1 = self.projected_vertices[e[0]]
+            p2 = self.projected_vertices[e[1]]
+            result.append((p1,p2))
+        return result
     
     def calculate_edges(self):
         return 
@@ -325,9 +381,9 @@ class SVGWriter:
     def polyline(self, points):
         self.file.write('<polyline points="')
         for p in points:
-            self.file.write("%f,%f " % (p[0], p[1]))
+            self.file.write("%f,%f " % (p.position[0], p.position[1]))
         self.file.write('"\n')
-        self.file.write('style="fill:none;stroke:black;stroke-width:3" />\n')
+        self.file.write('style="fill:none;stroke:black;stroke-width:%f" />\n'% (self.policy.line_width))
         return 
     
     #
@@ -359,7 +415,7 @@ class SVGWriter:
                         
         if self.policy.edge_detection == 'OPT_A':
             if self.policy.back_culling:
-                f = svg_mesh.front_faces()
+                f = svg_mesh.project_faces(svg_mesh.front_faces())
                 print("Front faces count: ", len(f))
                 for v in f:
                     self.polygon(v)
@@ -369,7 +425,12 @@ class SVGWriter:
                 for v in f:
                     self.polygon(v)
         elif self.policy.edge_detection == 'OPT_B':
-            print("Warning: edge detection algorithm is not supported")
+            edges = svg_mesh.all_edges(self.policy.edge_max_value)     
+            if edges != None:
+                for e in edges:
+                    self.polyline(e)       
+            else:
+                print("Can't export mesh to svg due to error in edge detection algorithm")
         else:
             print("Edge detection algorithm is not supported")
                        
@@ -417,6 +478,8 @@ class SVGExportPolicy:
         self.line_width = 1
         #   edge detection algorithm
         self.edge_detection = 'OPT_B'
+        #   max value for edge detection algorithm
+        self.edge_max_value = 45.0
 
 #
 #   Exporter implementation
@@ -466,12 +529,23 @@ class SVGExporter(Operator, ExportHelper):
             max = 10.0,
             default = 1)
             
+    #   set up width of lines
+    edge_max_value = FloatProperty( 
+            name = "Max angle",
+            description = "Max angle for edge detection algorithm",
+            options = {'ANIMATABLE'},
+            subtype = 'NONE',
+            unit = 'LENGTH',
+            min = 15,
+            max = 90,
+            default = 45)
+            
     edge_detection = EnumProperty(
         name="Edge detection",
         description="Select edge detection algorithm",
         items=(('OPT_A', "Algorithm 1", "No edge detection"),
                ('OPT_B', "Algorithm 2", "Simple edge detection")),
-        default='OPT_A',
+        default='OPT_B',
         )
                             
 
@@ -483,6 +557,7 @@ class SVGExporter(Operator, ExportHelper):
         options.wireframe = self.wireframe
         options.line_width = self.line_width
         options.edge_detection = self.edge_detection
+        options.edge_max_value = self.edge_max_value
         
         writer = SVGWriter(options)
         return writer.run()
