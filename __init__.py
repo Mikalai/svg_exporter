@@ -34,6 +34,38 @@ from copy import deepcopy
 from mathutils import Matrix, Vector
 from math import tan, atan
 
+def make_view_matrix(eye, target, up):
+    zAxis = eye - target
+    zAxis.normalize()
+    xAxis = up.cross(zAxis)
+    xAxis.normalize()
+    yAxis = zAxis.cross(xAxis)
+    yAxis.normalize()
+
+    m = Matrix()
+
+    m[0][0] = xAxis[0]
+    m[1][0] = xAxis[1]
+    m[2][0] = xAxis[2]
+    m[3][0] = -(eye * xAxis)
+
+    m[0][1] = yAxis[0]
+    m[1][1] = yAxis[1]
+    m[2][1] = yAxis[2]
+    m[3][1] = -(eye * yAxis)
+
+    m[0][2] = zAxis[0]
+    m[1][2] = zAxis[1]
+    m[2][2] = zAxis[2]
+    m[3][2] = -(eye * zAxis)
+
+    m[0][3] = 0.0
+    m[1][3] = 0.0
+    m[2][3] = 0.0
+    m[3][3] = 1.0
+    
+    return m
+
 #   
 #   calculates typical perspective projection matrix
 #   based on camera field of view, aspect ratio and
@@ -146,15 +178,19 @@ class SVGMesh:
     def front_faces(self):        
         #   get normal transform matrix
         normal_matrix = (self.view * self.world).to_3x3().inverted().transposed()
+        
+        print("Normal matrix: ", normal_matrix)
     
         result = []    
         for face in self.faces:
-            normal = normal_matrix * face.normal
+            normal = (normal_matrix * face.normal).normalized()
+            print("Normal in view space: ", normal)
             #   calculate dot product
-            cos_angle = normal * Vector((0,0,1))
+            cos_angle = normal * Vector((0,0,-1))
+            print("Cos angle: ", cos_angle)
     
             #   skip this polygon
-            if (cos_angle <= 0):
+            if (cos_angle >= 0.3):
                 continue
                            
             v = []
@@ -186,7 +222,8 @@ class SVGCamera:
         self.proj_matrix = Matrix()      
     
     def make_camera(self, blender_camera):
-        self.view_matrix = blender_camera.matrix_world.inverted()
+        m = blender_camera.matrix_world
+        self.view_matrix = m.inverted()        
         self.proj_matrix = Matrix()
                 
         if blender_camera.data.type == 'PERSP':
