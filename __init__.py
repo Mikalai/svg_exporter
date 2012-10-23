@@ -111,6 +111,7 @@ class SVGFace:
         self.vertices = polygon.vertices   
         self.normal = polygon.normal
         self.edges = polygon.edge_keys
+        self.visible_edges = set()
         return
 
 class SVGEdge:
@@ -127,6 +128,7 @@ class SVGMesh:
         self.vertices = []
         self.edges = set()
         self.faces = []       
+        self.front_faces = []
         self.proj = Matrix()
         self.view = Matrix()
         self.world = Matrix()
@@ -180,7 +182,7 @@ class SVGMesh:
         print(c.length)
         return c.length
     
-    def front_faces(self):        
+    def calc_front_faces(self):        
         #   get normal transform matrix
         normal_matrix = (self.view * self.world).to_3x3().inverted().transposed()
         
@@ -198,7 +200,9 @@ class SVGMesh:
             if (cos_angle >= 0):
                 continue
             
-            result.append(face)            
+            result.append(face)     
+            
+            self.front_faces = result      
         return result    
     
     def project_faces(self, faces):
@@ -220,7 +224,7 @@ class SVGMesh:
         return result   
     
     def all_edges(self, max_value):
-        front_faces = self.front_faces()
+        front_faces = self.front_faces
         print("Front faces to check: ", len(front_faces));
         #   find all edges of front faces
         all_edges = {}
@@ -246,13 +250,16 @@ class SVGMesh:
             if len(faces) == 1:
                 #   we found a border
                 edges.add(e1)
+                faces[0].visible_edges.add(e1)
             elif len(faces) == 2:                                   
                 #   calculate angle between normals of two border meshes         
                 cos_angle = faces[0].normal*faces[1].normal
                 #print("Cos angle: ", cos_angle)
                 #   check if this edge is rough enough
-                if cos_angle < cos(max_value/180*pi):
+                if cos_angle < cos(max_value/180*pi):                    
                     edges.add(e1)
+                    faces[0].visible_edges.add(e1)
+                    faces[1].visible_edges.add(e1)
             else:
                 print("Ignoring edge", e1, " because no front faces found for it")
             
@@ -389,16 +396,16 @@ class SVGWriter:
     #
     #   ployline
     #
-    def polygon(self, points):
+    def polygon(self, points, fill_color = (255,255,255), border_color = (0,0,0)):
         self.file.write('<polygon points="')
         for p in points:
            # print("Write: ", p.position[0])
             self.file.write("%f,%f " % (p.position[0], p.position[1]))
         self.file.write('"\n')           
         if self.policy.wireframe:
-            self.file.write('style="fill:none;stroke:black;stroke-width:%f" />\n' % (self.policy.line_width))
+            self.file.write('style="fill:none;stroke:rgb(%d,%d,%d);stroke-width:%f" />\n' % (border_color[0], border_color[1], border_color[2], self.policy.line_width))
         else:
-          self.file.write('style="fill:rgb(255,255,255); stroke:black;stroke-width:%f" />\n' % (self.policy.line_width))
+          self.file.write('style="fill:rgb(%d,%d,%d); stroke:rgb(%d,%d,%d);stroke-width:%f" />\n' % (fill_color[0], fill_color[1], fill_color[2], border_color[0], border_color[1], border_color[2], self.policy.line_width))
         return 
     
     #
@@ -412,25 +419,49 @@ class SVGWriter:
         
         if self.policy.sort_zview:
             svg_mesh.sort_faces()
-                        
-        if self.policy.edge_detection == 'OPT_A':
-            if self.policy.back_culling:
-                f = svg_mesh.project_faces(svg_mesh.front_faces())
+
+        #   calc front faces only once
+        svg_mesh.calc_front_faces()
+        
+        #   according to the edge detection algorithm do
+        if self.policy.edge_detection == 'OPT_A':   #   no edge detection algorithm
+            if self.policy.back_culling:    #   enable back face culling
+                #   use only front faces
+                f = svg_mesh.project_faces(svg_mesh.front_faces)    
                 print("Front faces count: ", len(f))
                 for v in f:
                     self.polygon(v)
             else:
+                #   use all faces
                 f = svg_mesh.all_faces()
                 print("Front faces count: ", len(f))
                 for v in f:
-                    self.polygon(v)
-        elif self.policy.edge_detection == 'OPT_B':
-            edges = svg_mesh.all_edges(self.policy.edge_max_value)     
-            if edges != None:
-                for e in edges:
-                    self.polyline(e)       
+                    self.polygon(v)                    
+        elif self.policy.edge_detection == 'OPT_B': #   use edge detection
+            #   calculate all visible edges
+            edges = svg_mesh.all_edges(self.policy.edge_max_value)  
+            if self.policy.wireframe:   #   wireframe mode
+                if edges != None:
+                    #   draw every visible edge
+                    for e in edges:
+                        self.polyline(e)                   
+                else:
+                    print("Can't export mesh to svg due to error in edge detection algorithm")
             else:
-                print("Can't export mesh to svg due to error in edge detection algorithm")
+                #   use only front faces
+                f = svg_mesh.front_faces
+                for face in f:
+                    verts = []
+                    #   make polygon from face
+                    for v in face.vertices:
+                        verts.append(svg_mesh.projected_vertices[v])
+                    #   draw white polygon
+                    self.polygon(points = verts, fill_color = (255,255,255), border_color = (255, 255, 255))
+                    #   if face has visible edges than draw them
+                    if len(face.visible_edges) != 0:
+                        for e in face.visible_edges:
+                            verts = [svg_mesh.projected_vertices[e[0]], svg_mesh.projected_vertices[e[1]]]
+                            self.polyline(verts)
         else:
             print("Edge detection algorithm is not supported")
                        
