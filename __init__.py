@@ -28,6 +28,7 @@ bl_info = {
 import bpy
 import math
 import mathutils
+import mathutils.geometry
 import copy
 
 from copy import deepcopy
@@ -101,17 +102,65 @@ def make_projection_matrix(fovx, aspect, znear, zfar):
     
     return m
 
+#   
+#   calculates typical perspective projection matrix
+#   based on camera field of view, aspect ratio and
+#   near and far clipping planes
+#
+def make_ortho_projection_matrix(width, height, near, far, scale):
+    left = 1*scale
+    right = -1*scale
+    top = -1*height/width*scale
+    bottom = 1*height/width*scale
+        
+    m = Matrix()
+    
+    m[0][0] = 2/(right - left)
+    m[0][1] = 0.0
+    m[0][2] = 0.0
+    m[0][3] = -(right+left)/(right-left)
+    
+    m[1][0] = 0.0;
+    m[1][1] = 2/(top - bottom)
+    m[1][2] = 0.0
+    m[1][3] = -(top+bottom)/(top-bottom)
+    
+    m[2][0] = 0.0
+    m[2][1] = 0.0
+    m[2][2] = -2/(far - near)
+    m[2][3] = -(far+near)/(far-near)
+    
+    m[3][0] = 0.0
+    m[3][1] = 0.0
+    m[3][2] = 0
+    m[3][3] = 1
+    
+    return m
+
 class SVGVertex: 
     def __init__(self):
         self.position = Vector()
         return
  
 class SVGFace:
+    
     def __init__(self, polygon):
-        self.vertices = polygon.vertices   
-        self.normal = polygon.normal
-        self.edges = polygon.edge_keys
-        self.visible_edges = set()
+        if type(polygon) == SVGFace:
+            self.vertices = []
+            self.normal = polygon.normal
+            self.edges = []
+            self.visible_edges = []
+            self.distance = polygon.distance
+        else:
+            self.vertices = []
+            for v in polygon.vertices:
+                self.vertices.append(v)
+            self.normal = polygon.normal
+            self.edges = []
+            for edge in polygon.edge_keys:
+                self.edges.append(list(edge))
+            self.visible_edges = set()
+            self.distance = 0
         return
 
 class SVGEdge:
@@ -299,7 +348,12 @@ class SVGCamera:
             far = blender_camera.data.clip_end
             self.proj_matrix = make_projection_matrix(fovx, aspect, near, far)
         elif blender_camera.data.type == 'ORTHO':
-            print("WARNING: Orthoprojection is not supported yet")
+            screen_width = bpy.context.scene.render.resolution_x
+            screen_height = bpy.context.scene.render.resolution_y
+            near = blender_camera.data.clip_start
+            far = blender_camera.data.clip_end
+            scale = blender_camera.data.ortho_scale
+            self.proj_matrix = make_ortho_projection_matrix(screen_width, screen_height, near, far, scale)
             pass
         else:
             print("Unsupported camera type")  
@@ -307,11 +361,290 @@ class SVGCamera:
         print("Camera made")
         print("View matrix:\n", self.view_matrix)
         print("Projection matrix:\n", self.proj_matrix)
+        return
+    
 
+class BSPTree:
+    
+    def __init__(self):
+        self.splitter = []
+        self.front = None
+        self.back = None
+        return
+                        
+#   bsp compiler used to make bsp trees
+class BSPCompiler:
+    
+    def __init__(self):
+        self.vertex = []
+        self.faces = []
+        self.root = BSPTree()
+        self.camera = None
+        return
+    
+    def project(self, camera):
+        self.camera = camera
+        print(len(self.vertex))
+        for i in range(len(self.vertex)):
+            v = self.vertex[i].position
+            # print("Projection ", i, " ", self.vertex[i].position)
+            v = camera.proj_matrix * camera.view_matrix * v
+            v /= v[2]
+    
+            #   scale and centralise
+            screen_width = bpy.context.scene.render.resolution_x
+            screen_height = bpy.context.scene.render.resolution_y
+            
+            v[0] = screen_width / 2 + v[0] / 2 * screen_width
+            v[1] = screen_height / 2 + -v[1] / 2 * screen_height
+            
+            self.vertex[i].position = v
+                                       
+        return
+
+    def cross(self, face, p1, p2):
+      #  print("Cross with ", face.vertices, " ", p1, " ", p2, "...")
+        l = p2 - p1;
+        t = - (face.normal * p1 + face.distance) / (face.normal * l)
+        return p1 + t*(p2- p1)
+    
+    def make_polygon(self, splitter):
+        res = []
+        for index in splitter.vertices:
+            res.append(self.vertex[index])
+        return res
+    
+    def write(self, tree, writer):
+        #print("Started writing tree to file...")
+        #writer.polygon(self.splitter.vertex)
+        #print("Write sub trees...")
+        camera = self.camera.view_matrix.inverted().to_translation()
+        sign = tree.splitter[0].distance + camera * tree.splitter[0].normal
+        #print("Sign is ", sign)
+        if sign > 0:    #   camera is in front
+            if tree.back != None:
+                #print("Write back")                
+                self.write(tree.back, writer)
+#            print("Write current")
+            for face in tree.splitter:
+                writer.polygon(self.make_polygon(face), border_color = (0, 0,0))
+            if tree.front != None:
+#                print("Write front")  
+                self.write(tree.front, writer)
+        else:   #   back
+            if tree.front != None:
+ #               print("Write front") 
+                self.write(tree.front, writer)
+            for face in tree.splitter:
+                writer.polygon(self.make_polygon(face), border_color = (0, 0, 0))
+            if tree.back != None:
+  #              print("Write back")                
+                self.write(tree.back, writer)
+        #print("Writing tree to file finished...")
+        return               
+            
+    
+    def split(self, a, b):
+        if a == None or b == None:
+            print("Invalid arguments for splitting...")
+            
+      #  print("Split face b by face a...")
+        prev_sign = 1 if a.normal * self.vertex[b.vertices[0]].position + a.distance > 0 else -1        
+       # print("Initial sign is ", prev_sign)
         
+        #print("Create front and back BSP face...")
+        front = SVGFace(b)
+        #print("Front face created...")
+        back = SVGFace(b)
+        #print("Back face created...")
+        
+        #print("Perform intial tuning")
+        if prev_sign == 1:
+            front.vertices.append(b.vertices[0])
+            cur = front
+        else:
+            back.vertices.append(b.vertices[0])
+            cur = back
+            
+        index = []
+        for i in b.vertices:
+            index.append(i)
+        index.append(index[0])
+        #print(index)
+        #print("Split face b...")
+        for i in range(1, len(index)):        
+            sign =  1 if a.normal * self.vertex[index[i]].position + a.distance > 0 else -1    
+           # print("Sign of the ", index[i], " vertex ", sign)
+            if prev_sign != sign:   #   found intersection
+            #    print("Find intersection point...")
+                intersection = self.cross(a, self.vertex[index[i-1]].position, self.vertex[index[i]].position)
+                #   get last index
+                new_index = len(self.vertex)
+                new_vertex = SVGVertex()
+                new_vertex.position = intersection
+                #   add intersection point to points
+                self.vertex.append(new_vertex)                
+             #   print("Intersection point ", new_vertex.position)
+                #   add vertex index to faces
+                front.vertices.append(new_index)
+                back.vertices.append(new_index)
+                if sign == 1:
+                    cur = front
+                else:
+                    cur = back
+                prev_sign = sign
+            if index[i] != index[-1]:
+                cur.vertices.append(index[i]) 
+    
+      #  print("Face b splitted...")    
+        
+        return (front, back)
+
+    def classify_faces(self, a, b):
+     #   print("Calssification")
+        
+        s = a.normal * self.vertex[b.vertices[0]].position + a.distance
+      #  print("Sign is: ", s)
+        if abs(s) < 0.0001:
+            s = 0
+            on = 0
+        else:
+            if s > 0:
+                s = 1
+                on = 1
+            else:
+                s = -1
+                on = -1
+        on = 0        
+        for v in b.vertices:
+            ss = a.normal * self.vertex[v].position + a.distance
+            if abs(ss) < 0.0001:
+                continue
+            else:
+                if ss > 0 and on == -1:
+                    return "SPANNING"
+                elif ss < 0 and on == 1:
+                    return "SPANNING"                
+                else:
+                    on = 1 if ss > 0 else -1
+                            
+        if on == 0:
+            return "ON"
+        
+        if (on > 0):
+            return "FRONT"
+        
+        return "BACK"
+    
+    def compile(self, tree, faces = None):
+        if faces == None:   #   use all faces
+            faces = self.faces
+            print("BSP compilation started...")
+            
+        if len(faces) == 0:
+            print("No faces to build BSP tree")
+            return "NO_FACES"
+
+       # print("  Find splitter")
+        tree.splitter.append(faces[0])
+        print("  Splitter: ", tree.splitter[0].vertices)
+        #print("  Remove splitter from face list...")
+        faces.remove(tree.splitter[0])
+        
+        if (len(faces) == 0):
+          #  print("  No more faces...")
+            return
+        
+        front = []
+        back = []
+        #print("  Go through all faces...")
+        for f in faces:
+            print("  Check face: ", f.vertices);
+            res = self.classify_faces(tree.splitter[0], f)
+            
+            if res == "ON":
+                print("    Face is on the splitter...")
+                tree.splitter.append(f)
+            elif res == "FRONT":
+                print("    Face is in the front of the splitter...")
+                front.append(f)
+            elif res == "BACK":
+                print("    Face is in the back of the splitter...")
+                back.append(f)
+            elif res == "SPANNING":
+                print("    Face should be splitted...")
+                ff = self.split(tree.splitter[0], f)
+                print(ff[0].vertices)
+                print(ff[1].vertices)
+                front.append(ff[0])
+                back.append(ff[1])
+                
+        if len(front) != 0:
+        #    print("  Compile front subtree...")
+         #   print("  THERE ARE ", len(front), " FACES")
+            tree.front = BSPTree()
+            self.compile(tree.front, front)
+        
+        if len(back) != 0:
+        #    print("  Compile back subtree...")      
+           # print("  THERE ARE ", len(back), " FACES")
+            tree.back = BSPTree()
+            self.compile(tree.back, back)
+
+        return
+        
+    def add_mesh(self, camera, object):
+        print("Add object ", object.name, " to BSP compiler...")
+        #print("Object world matrix: \n", object.matrix_world)
+        #print("Camera view matrix: \n", camera.view_matrix)
+        world = object.matrix_world
+        #print("ViewWorld matrix \n", world)
+        normal_matrix = world.to_3x3().inverted().transposed()
+        #print("Normal matrix \n", normal_matrix)
+                
+        #   base index represents start of the vertex of current object
+        base_index = len(self.vertex)
+        print("Base index ", base_index)
+        
+        print("  Transform vertices to world...")
+        #   transform object vertices into camera space
+        for v in object.data.vertices:
+            vertex = SVGVertex()
+            vertex.position = world * v.co
+            self.vertex.append(vertex)
+            
+        print("  Calculate faces in the world...")
+        #   add faces
+        for f in object.data.polygons:
+            face = SVGFace(f)
+            #   modify vertex base index in faces
+            #print("  Modify vertex base in faces")
+            for i in range(0, len(face.vertices)):
+                face.vertices[i] = face.vertices[i] + base_index     
+            #print("  Modify vertex base in edges");
+            for i in range(0, len(face.edges)):
+                face.edges[i][0] += base_index
+                face.edges[i][1] += base_index                
+            #print("  Calculate distance")
+            face.normal = normal_matrix * face.normal
+            face.distance = -face.normal * self.vertex[face.vertices[0]].position
+            print("Normal: ", face.normal, ". Distance: ", face.distance)
+            #print(face.distance)
+            self.faces.append(face)
+        print("  Mesh conversion complete...")
+        return    
+    
+    def add(self, camera, object):  
+        if type(object.data) == bpy.types.Mesh:
+            self.add_mesh(camera, object)
+        print("Objected added to BSP compiler...")
+        return
+    
 class SVGWriter:
+
     def __init__(self, policy):
         self.policy = policy
+        self.bsp_compiler = None
         
     #
     #   opens file and call export functions
@@ -351,12 +684,30 @@ class SVGWriter:
         self.begin()
         
         #   retrieve camera
+        print("Create camera")
         self.camera = SVGCamera()
         self.camera.make_camera(bpy.context.scene.camera)
         
-        #   export every object 
-        for object in bpy.context.selected_objects:
-            self.export_object(object)
+        #   we can build a bsp tree to get correct result in depth sorting
+        if self.policy.build_bsp:
+            print("Export using BSP tree...")
+            self.bsp_compiler = BSPCompiler()
+            print("Adding meshes to the BSP compiler...")
+            for object in bpy.context.selected_objects:
+                self.bsp_compiler.add(self.camera, object)
+            tree = BSPTree()
+            print("Compile BSP tree...")
+            self.bsp_compiler.compile(tree)                                
+            print("Project BSP tree...")
+            self.bsp_compiler.project(self.camera)
+            print("Write BSP tree to file...")
+            self.bsp_compiler.write(tree, self)
+            print("Export complete.")
+        else:
+            print("Export using simple method...")
+            #   export every object 
+            for object in bpy.context.selected_objects:
+                self.export_object(object)
             
         self.end()
         return {'FINISHED'}
@@ -397,15 +748,26 @@ class SVGWriter:
     #   ployline
     #
     def polygon(self, points, fill_color = (255,255,255), border_color = (0,0,0)):
+        #print("Write polygon to file")
         self.file.write('<polygon points="')
-        for p in points:
-           # print("Write: ", p.position[0])
-            self.file.write("%f,%f " % (p.position[0], p.position[1]))
-        self.file.write('"\n')           
-        if self.policy.wireframe:
-            self.file.write('style="fill:none;stroke:rgb(%d,%d,%d);stroke-width:%f" />\n' % (border_color[0], border_color[1], border_color[2], self.policy.line_width))
+        if type(points[0]) == SVGVertex:
+            for p in points:            
+                #print("Write: ", p.position)
+                self.file.write("%f,%f " % (p.position[0], p.position[1]))
+            self.file.write('"\n')           
+            if self.policy.wireframe:
+                self.file.write('style="fill:none;stroke:rgb(%d,%d,%d);stroke-width:%f" />\n' % (border_color[0], border_color[1], border_color[2], self.policy.line_width))
+            else:
+              self.file.write('style="fill:rgb(%d,%d,%d); stroke:rgb(%d,%d,%d);stroke-width:%f" />\n' % (fill_color[0], fill_color[1], fill_color[2], border_color[0], border_color[1], border_color[2], self.policy.line_width))
         else:
-          self.file.write('style="fill:rgb(%d,%d,%d); stroke:rgb(%d,%d,%d);stroke-width:%f" />\n' % (fill_color[0], fill_color[1], fill_color[2], border_color[0], border_color[1], border_color[2], self.policy.line_width))
+            for p in points:            
+                #print("Write: ", p)
+                self.file.write("%f,%f " % (p[0], p[1]))
+            self.file.write('"\n')           
+            if self.policy.wireframe:
+                self.file.write('style="fill:none;stroke:rgb(%d,%d,%d);stroke-width:%f" />\n' % (border_color[0], border_color[1], border_color[2], self.policy.line_width))
+            else:
+              self.file.write('style="fill:rgb(%d,%d,%d); stroke:rgb(%d,%d,%d);stroke-width:%f" />\n' % (fill_color[0], fill_color[1], fill_color[2], border_color[0], border_color[1], border_color[2], self.policy.line_width))
         return 
     
     #
@@ -511,6 +873,8 @@ class SVGExportPolicy:
         self.edge_detection = 'OPT_B'
         #   max value for edge detection algorithm
         self.edge_max_value = 45.0
+        #   build bsp tree
+        self.build_bsp = True
 
 #
 #   Exporter implementation
@@ -548,7 +912,14 @@ class SVGExporter(Operator, ExportHelper):
             description = "Enable ",
             default = True,
             )  
-            
+    
+    #   enable auto z sort
+    build_bsp = BoolProperty(
+            name = "Use BSP",
+            description = "Enable BSP construction for correct depth export",
+            default = True,
+            )  
+        
     #   set up width of lines
     line_width = FloatProperty( 
             name = "Line width",
@@ -589,6 +960,7 @@ class SVGExporter(Operator, ExportHelper):
         options.line_width = self.line_width
         options.edge_detection = self.edge_detection
         options.edge_max_value = self.edge_max_value
+        options.build_bsp = self.build_bsp
         
         writer = SVGWriter(options)
         return writer.run()
